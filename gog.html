@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My Cloud ✌️</title>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import { getDatabase, ref, push, onValue, remove, set } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+
+// NEW FIREBASE PROJECT - CHECK DATABASE URL IN CONSOLE
+const firebaseConfig = {
+  apiKey: "AIzaSyBxIu8SsHqrtMU3dWRsysNmNlwjcdFE_xM",
+  authDomain: "file-1bb57.firebaseapp.com",
+  databaseURL: "https://file-1bb57-default-rtdb.firebaseio.com", // DEFAULT - CHANGE IF EUROPE/ASIA
+  projectId: "file-1bb57",
+  storageBucket: "file-1bb57.firebasestorage.app",
+  messagingSenderId: "824967426874",
+  appId: "1:824967426874:web:fbf20b808c2624deb0d603",
+  measurementId: "G-0CZH7Z7M7N"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+const auth = getAuth(app);
+
+// Test connection immediately
+console.log("🚀 Starting My Cloud v2...");
+console.log("🌐 Database URL:", firebaseConfig.databaseURL);
+
+let connectionTested = false;
+const testConnection = async () => {
+  try {
+    // Sign in anonymously
+    await signInAnonymously(auth);
+    console.log("✅ Signed in anonymously");
+    
+    // Test write to database
+    const testRef = ref(db, "connection_test");
+    await set(testRef, { 
+      timestamp: Date.now(),
+      message: "My Cloud Connection Test",
+      status: "active"
+    });
+    
+    console.log("✅ Database write test: SUCCESS");
+    document.getElementById("connectionStatus").innerHTML = 
+      '<span style="color: green;">✅ Connected to Firebase</span>';
+    connectionTested = true;
+    
+    // Read it back to confirm
+    onValue(testRef, (snapshot) => {
+      console.log("✅ Database read test: SUCCESS", snapshot.val());
+    }, { onlyOnce: true });
+    
+  } catch (error) {
+    console.error("❌ Connection failed:", error.code, error.message);
+    
+    let errorMsg = error.message;
+    if (error.code === 'PERMISSION_DENIED') {
+      errorMsg = "Database locked - Change rules to '.read: true, .write: true'";
+      document.getElementById("connectionStatus").innerHTML = 
+        `<span style="color: red; font-weight: bold;">
+          🔒 DATABASE LOCKED - 
+          <a href="https://console.firebase.google.com/project/file-1bb57/database/file-1bb57-default-rtdb/rules" 
+             target="_blank" style="color: white; background: red; padding: 2px 5px; border-radius: 3px;">
+            Click here to fix rules
+          </a>
+        </span>`;
+    } else if (error.code === 'DATABASE/UNKNOWN') {
+      errorMsg = "Database not found - Enable Realtime Database in Firebase Console";
+      document.getElementById("connectionStatus").innerHTML = 
+        `<span style="color: red;">
+          ❌ Database not enabled - 
+          <a href="https://console.firebase.google.com/project/file-1bb57/database" 
+             target="_blank" style="color: white; background: red; padding: 2px 5px; border-radius: 3px;">
+            Enable Database
+          </a>
+        </span>`;
+    } else {
+      document.getElementById("connectionStatus").innerHTML = 
+        `<span style="color: red;">❌ Connection error: ${error.message}</span>`;
+    }
+    
+    console.log("Fix: Go to Firebase Console → Build → Realtime Database");
+    console.log("1. Create database if not exists");
+    console.log("2. Set rules: { \"rules\": { \".read\": true, \".write\": true } }");
+    connectionTested = false;
+  }
+};
+
+// Run connection test
+testConnection();
+
+const filesRef = ref(db, "files");
+let allFiles = [];
+const MAX_STORAGE = 1024 * 1024 * 1024; // 1GB
+let pendingFiles = [];
+let uploadInProgress = false;
+
+// UPLOAD FUNCTION - WITH TIMEOUT AND ERROR HANDLING
+window.uploadFiles = async (files) => {
+  if (!connectionTested) {
+    alert("❌ Not connected to Firebase. Check connection status above.");
+    return;
+  }
+  
+  if (uploadInProgress) {
+    alert("Please wait, another upload is in progress");
+    return;
+  }
+  
+  uploadInProgress = true;
+  let uploadedCount = 0;
+  let failedCount = 0;
+  
+  // Clear previous status
+  document.getElementById("uploadStatus").innerHTML = "";
+  
+  document.getElementById("uploadStatus").innerHTML = 
+    `<span style="color: blue;">🔄 Starting upload of ${files.length} file(s)...</span>`;
+  
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    
+    // Check file size (5MB limit)
+    if (file.size > 5 * 1024 * 1024) {
+      document.getElementById("uploadStatus").innerHTML += 
+        `<br><span style="color: orange;">⚠️ ${file.name} is too large (max 5MB)</span>`;
+      failedCount++;
+      continue;
+    }
+
+    try {
+      document.getElementById("currentFile").innerText = `Uploading: ${file.name} (${(file.size/1024).toFixed(1)} KB)`;
+      document.getElementById("progressContainer").style.display = "block";
+      
+      // Calculate progress based on file count
+      const fileProgress = ((i) / files.length) * 100;
+      document.getElementById("uploadProgress").style.width = fileProgress + "%";
+      document.getElementById("eta").innerText = `File ${i+1}/${files.length}`;
+      
+      // Read file as Base64
+      const base64Data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      
+      // Prepare file data
+      const fileData = {
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        date: Date.now(),
+        data: base64Data
+      };
+      
+      console.log(`📤 Uploading ${file.name} (${(file.size/1024).toFixed(1)} KB)...`);
+      
+      // Upload with 10-second timeout
+      const uploadPromise = new Promise(async (resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Upload timeout after 10 seconds"));
+        }, 10000);
+        
+        try {
+          const newFileRef = push(filesRef);
+          await set(newFileRef, fileData);
+          clearTimeout(timeout);
+          resolve();
+        } catch (error) {
+          clearTimeout(timeout);
+          reject(error);
+        }
+      });
+      
+      await uploadPromise;
+      
+      uploadedCount++;
+      console.log("✅ Upload successful:", file.name);
+      
+      // Update progress
+      const progressPercent = Math.round(((i + 1) / files.length) * 100);
+      document.getElementById("uploadProgress").style.width = progressPercent + "%";
+      
+      document.getElementById("uploadStatus").innerHTML = 
+        `<span style="color: green;">✅ Uploaded ${uploadedCount}/${files.length} files</span>`;
+      
+      // Small delay between files
+      if (i < files.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      
+    } catch (error) {
+      console.error("❌ Upload failed:", file.name, error);
+      failedCount++;
+      
+      let errorMsg = error.message;
+      if (error.message.includes("Permission denied") || error.code === "PERMISSION_DENIED") {
+        errorMsg = "Database locked - Change Firebase rules to allow writes";
+      }
+      
+      document.getElementById("uploadStatus").innerHTML += 
+        `<br><span style="color: red;">❌ Failed: ${file.name} - ${errorMsg}</span>`;
+    }
+  }
+  
+  // Upload complete
+  document.getElementById("uploadProgress").style.width = "100%";
+  document.getElementById("eta").innerText = `✅ Upload complete!`;
+  
+  if (uploadedCount > 0) {
+    document.getElementById("uploadStatus").innerHTML += 
+      `<br><span style="color: green;">🔄 Files will appear below in 1-2 seconds...</span>`;
+  }
+  
+  if (failedCount > 0) {
+    document.getElementById("uploadStatus").innerHTML += 
+      `<br><span style="color: red;">⚠️ ${failedCount} file(s) failed to upload</span>`;
+  }
+  
+  // Reset after 3 seconds
+  setTimeout(() => {
+    document.getElementById("progressContainer").style.display = "none";
+    document.getElementById("uploadProgress").style.width = "0%";
+    document.getElementById("eta").innerText = "";
+    document.getElementById("currentFile").innerText = "";
+    uploadInProgress = false;
+  }, 3000);
+  
+  // Clear selection
+  pendingFiles = [];
+  document.getElementById("selectedFiles").style.display = "none";
+  document.getElementById("fileInput").value = "";
+  document.getElementById("folderInput").value = "";
+};
+
+// Show selected files
+window.showSelectedFiles = (files) => {
+  pendingFiles = [...files];
+  const filesList = document.getElementById("filesList");
+  const selectedSection = document.getElementById("selectedFiles");
+  const countSpan = document.getElementById("selectedFileCount");
+  
+  filesList.innerHTML = "";
+  
+  if (files.length === 0) {
+    selectedSection.style.display = "none";
+    return;
+  }
+  
+  selectedSection.style.display = "block";
+  countSpan.innerText = files.length;
+  
+  let totalSize = 0;
+  [...files].forEach(file => {
+    totalSize += file.size;
+    const fileItem = document.createElement("div");
+    fileItem.style.cssText = "padding: 8px; background: #f3f4f6; margin-bottom: 5px; border-radius: 8px; font-size: 14px;";
+    fileItem.innerHTML = `📄 ${file.name} (${(file.size/1024).toFixed(1)} KB)`;
+    filesList.appendChild(fileItem);
+  });
+  
+  document.getElementById("totalSize").innerText = `Total: ${(totalSize/1024/1024).toFixed(2)} MB`;
+};
+
+// Confirm upload
+window.confirmUpload = () => {
+  if (pendingFiles.length > 0) {
+    if (!connectionTested) {
+      alert("❌ Please wait for Firebase connection to be established");
+      return;
+    }
+    uploadFiles(pendingFiles);
+  }
+};
+
+// File input handler
+document.addEventListener('DOMContentLoaded', () => {
+  const fileInput = document.getElementById("fileInput");
+  const folderInput = document.getElementById("folderInput");
+  
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+      showSelectedFiles(e.target.files);
+    }
+  });
+
+  folderInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+      showSelectedFiles(e.target.files);
+    }
+  });
+
+  // Drag and drop
+  const dropZone = document.getElementById("dropZone");
+  
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.style.borderColor = "#8b5cf6";
+    dropZone.style.background = "#f5f3ff";
+  });
+
+  dropZone.addEventListener('dragleave', () => {
+    dropZone.style.borderColor = "#e5e7eb";
+    dropZone.style.background = "white";
+  });
+
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.style.borderColor = "#e5e7eb";
+    dropZone.style.background = "white";
+    
+    if (e.dataTransfer.files.length > 0) {
+      showSelectedFiles(e.dataTransfer.files);
+    }
+  });
+  
+  // Debug button
+  document.getElementById("debugBtn").addEventListener("click", async () => {
+    console.clear();
+    console.log("=== MY CLOUD DEBUG INFO ===");
+    console.log("Project: file-1bb57");
+    console.log("Database URL:", firebaseConfig.databaseURL);
+    console.log("Connection tested:", connectionTested);
+    console.log("Files in memory:", allFiles.length);
+    
+    // Test database access
+    try {
+      const testRef = ref(db, "files");
+      onValue(testRef, (snapshot) => {
+        const data = snapshot.val();
+        console.log("Files in database:", data ? Object.keys(data).length : 0);
+        
+        if (!data) {
+          console.log("Database is empty - no files yet");
+        } else {
+          console.log("Sample file:", Object.values(data)[0]);
+        }
+      }, { onlyOnce: true });
+    } catch (error) {
+      console.error("Debug check failed:", error);
+    }
+  });
+});
+
+// Download function - FIXED
+window.downloadFile = (base64Data, fileName) => {
+  try {
+    const link = document.createElement('a');
+    link.href = base64Data;
+    link.download = fileName;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    console.log("✅ Download started:", fileName);
+  } catch (error) {
+    console.error("Download error:", error);
+    alert("Failed to download. Try right-click → Save as.");
+  }
+};
+
+// Delete function
+window.deleteFile = (id) => {
+  if (confirm("Delete this file permanently?")) {
+    remove(ref(db, "files/" + id));
+  }
+};
+
+// Search function
+window.searchFiles = (query) => {
+  const filtered = allFiles.filter(f => 
+    f.name.toLowerCase().includes(query.toLowerCase())
+  );
+  renderFiles(filtered);
+};
+
+// Sort function
+window.sortFiles = (type) => {
+  let sorted = [...allFiles];
+  if (type === "name") sorted.sort((a,b) => a.name.localeCompare(b.name));
+  if (type === "size") sorted.sort((a,b) => b.size - a.size);
+  if (type === "date") sorted.sort((a,b) => b.date - a.date);
+  renderFiles(sorted);
+};
+
+// Render files to UI
+function renderFiles(files) {
+  const container = document.getElementById("filesContainer");
+  container.innerHTML = "";
+
+  if (files.length === 0) {
+    container.innerHTML = '<p style="text-align:center;color:#999;padding:40px;">No files yet</p>';
+    return;
+  }
+
+  files.forEach(f => {
+    const card = document.createElement("div");
+    card.className = "file-card";
+    
+    // File icon based on type
+    const icon = f.type.startsWith("image") ? "🖼️" :
+                 f.type.includes("pdf") ? "📄" :
+                 f.type.includes("video") ? "🎥" :
+                 f.type.includes("audio") ? "🎵" :
+                 f.type.includes("text") || f.type.includes("html") ? "📝" : "📁";
+
+    const date = new Date(f.date).toLocaleDateString() + " " + 
+                 new Date(f.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Escape special characters for HTML
+    const safeData = f.data ? f.data.replace(/'/g, "\\'").replace(/"/g, '\\"') : '';
+    const safeName = f.name ? f.name.replace(/'/g, "\\'").replace(/"/g, '\\"') : '';
+    
+    card.innerHTML = `
+      <div class="file-icon">${icon}</div>
+      <div class="file-info">
+        <div class="file-name" title="${f.name}">${f.name.length > 20 ? f.name.substring(0, 20) + '...' : f.name}</div>
+        <div class="file-meta">${(f.size/1024).toFixed(1)} KB • ${date}</div>
+        <div class="file-id" style="font-size:10px;color:#ccc;margin-top:2px;">${f.id.substring(0, 8)}...</div>
+      </div>
+      <div class="file-actions">
+        <button onclick="downloadFile('${safeData}','${safeName}')" title="Download">⬇️</button>
+        <button onclick="deleteFile('${f.id}')" class="delete-btn" title="Delete">🗑️</button>
+      </div>
+    `;
+    container.appendChild(card);
+  });
+}
+
+// Load files from Firebase
+onValue(filesRef, (snapshot) => {
+  allFiles = [];
+  let totalSize = 0;
+  
+  if (snapshot.exists()) {
+    snapshot.forEach((child) => {
+      const file = { id: child.key, ...child.val() };
+      allFiles.push(file);
+      
+      // Calculate Base64 size (approx 1.37x original)
+      totalSize += file.data ? file.data.length : 0;
+    });
+    
+    console.log(`📥 Loaded ${allFiles.length} files from database`);
+  }
+  
+  // Update UI
+  document.getElementById("fileCount").innerText = `${allFiles.length} Files`;
+  document.getElementById("storageUsed").innerText = 
+    `${(totalSize / 1024 / 1024).toFixed(1)} MB of ${(MAX_STORAGE / 1024 / 1024).toFixed(0)} MB used`;
+  
+  const percent = Math.min((totalSize / MAX_STORAGE) * 100, 100);
+  document.getElementById("storageBar").style.width = percent + "%";
+
+  // Render newest first
+  renderFiles(allFiles.sort((a,b) => b.date - a.date));
+}, (error) => {
+  console.error("Error loading files:", error);
+  document.getElementById("connectionStatus").innerHTML += 
+    `<br><span style="color: red;">❌ Error loading files: ${error.message}</span>`;
+});
+</script>
+
+<style>
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e8eaf6 100%);
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 15px;
+}
+
+.header h1 {
+  font-size: 28px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.header-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.search-btn, .debug-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: white;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.debug-btn {
+  background: #f59e0b;
+  color: white;
+}
+
+.connection-status {
+  padding: 10px 15px;
+  border-radius: 10px;
+  font-size: 14px;
+  margin-bottom: 20px;
+  background: white;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.cloud-card {
+  background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+  border-radius: 20px;
+  padding: 25px;
+  color: white;
+  box-shadow: 0 8px 25px rgba(139, 92, 246, 0.2);
+  margin-bottom: 25px;
+  position: relative;
+  overflow: hidden;
+}
+
+.cloud-icon {
+  width: 70px;
+  height: 50px;
+  background: rgba(255,255,255,0.2);
+  border-radius: 50%;
+  position: absolute;
+  right: 25px;
+  top: 25px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+}
+
+.cloud-card h2 {
+  font-size: 18px;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.cloud-info {
+  font-size: 13px;
+  opacity: 0.9;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.storage-bar {
+  height: 6px;
+  background: rgba(255,255,255,0.3);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-top: 12px;
+}
+
+.storage-bar-fill {
+  height: 100%;
+  background: white;
+  width: 0%;
+  transition: width 0.5s ease;
+}
+
+.upload-section {
+  background: white;
+  border-radius: 18px;
+  padding: 25px;
+  margin-bottom: 25px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+}
+
+.drop-zone {
+  border: 2px dashed #e5e7eb;
+  border-radius: 14px;
+  padding: 35px;
+  text-align: center;
+  background: white;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.drop-zone:hover {
+  border-color: #8b5cf6;
+  background: #f5f3ff;
+}
+
+.drop-zone p {
+  color: #6b7280;
+  margin-bottom: 20px;
+  font-size: 15px;
+}
+
+.upload-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.upload-btn {
+  background: #8b5cf6;
+  color: white;
+  border: none;
+  padding: 11px 25px;
+  border-radius: 10px;
+  font-size: 14px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.upload-btn:hover {
+  background: #7c3aed;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+}
+
+.folder-btn {
+  background: #6366f1;
+}
+
+.folder-btn:hover {
+  background: #4f46e5;
+}
+
+.confirm-btn {
+  background: #10b981;
+  font-size: 15px;
+  padding: 12px 35px;
+}
+
+.confirm-btn:hover {
+  background: #059669;
+}
+
+.progress-container {
+  margin-top: 15px;
+  display: none;
+}
+
+.progress-bar {
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #8b5cf6, #6366f1);
+  width: 0%;
+  transition: width 0.3s ease;
+}
+
+#eta, #currentFile {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 3px;
+}
+
+#uploadStatus {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f0f9ff;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+#totalSize {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 5px;
+  font-weight: 600;
+}
+
+.controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.controls input {
+  flex: 1;
+  min-width: 200px;
+  padding: 11px 15px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  font-size: 14px;
+  background: white;
+}
+
+.controls select {
+  padding: 11px 15px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  font-size: 14px;
+  cursor: pointer;
+  background: white;
+  min-width: 150px;
+}
+
+.files-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 15px;
+}
+
+.file-card {
+  background: white;
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  transition: all 0.2s ease;
+  border: 1px solid #f1f5f9;
+}
+
+.file-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 15px rgba(0,0,0,0.1);
+  border-color: #e5e7eb;
+}
+
+.file-icon {
+  font-size: 32px;
+  flex-shrink: 0;
+  width: 40px;
+  text-align: center;
+}
+
+.file-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-name {
+  font-weight: 500;
+  color: #1f2937;
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.file-meta {
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.4;
+}
+
+.file-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.file-actions button {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: #f3f4f6;
+  cursor: pointer;
+  font-size: 15px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.file-actions button:hover {
+  background: #e5e7eb;
+  transform: scale(1.05);
+}
+
+.delete-btn:hover {
+  background: #fee2e2 !important;
+  color: #dc2626;
+}
+
+@media (max-width: 768px) {
+  body {
+    padding: 15px;
+  }
+  
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  
+  .header h1 {
+    font-size: 24px;
+  }
+  
+  .header-buttons {
+    align-self: flex-end;
+  }
+  
+  .cloud-card, .upload-section {
+    padding: 20px;
+  }
+  
+  .drop-zone {
+    padding: 25px 20px;
+  }
+  
+  .upload-buttons {
+    flex-direction: column;
+    align-items: center;
+  }
+  
+  .upload-btn {
+    width: 100%;
+    max-width: 250px;
+    justify-content: center;
+  }
+  
+  .files-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .controls {
+    flex-direction: column;
+  }
+  
+  .controls input, .controls select {
+    min-width: 100%;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1024px) {
+  .files-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+input[type="file"] {
+  display: none;
+}
+
+a {
+  color: #8b5cf6;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+  
+  <div class="header">
+    <h1>My Cloud ✌️</h1>
+    <div class="header-buttons">
+      <button class="search-btn" onclick="document.getElementById('searchInput').focus()" title="Search">🔍</button>
+      <button class="debug-btn" id="debugBtn" title="Debug Info">🐛</button>
+    </div>
+  </div>
+
+  <div id="connectionStatus" class="connection-status">
+    🔄 Connecting to Firebase...
+  </div>
+
+  <div class="cloud-card">
+    <div class="cloud-icon">☁️</div>
+    <h2>RTDB File Manager</h2>
+    <div class="cloud-info">
+      <div id="fileCount">0 Files</div>
+      <div>Project: file-1bb57 • Max: 5MB/file</div>
+    </div>
+    <div id="storageUsed">0 MB of 1024 MB used</div>
+    <div class="storage-bar">
+      <div class="storage-bar-fill" id="storageBar"></div>
+    </div>
+  </div>
+
+  <div class="upload-section">
+    <div class="drop-zone" id="dropZone">
+      <p>📤 Drag & Drop files here (max 5MB each)</p>
+      <div class="upload-buttons">
+        <button class="upload-btn" type="button" onclick="document.getElementById('fileInput').click()">
+          📄 Choose Files
+        </button>
+        <button class="upload-btn folder-btn" type="button" onclick="document.getElementById('folderInput').click()">
+          📁 Choose Folder
+        </button>
+      </div>
+      <input type="file" id="fileInput" multiple>
+      <input type="file" id="folderInput" webkitdirectory directory multiple>
+      
+      <div id="selectedFiles" style="display:none; margin-top: 20px;">
+        <div id="filesList" style="text-align: left; margin-bottom: 15px; max-height: 150px; overflow-y: auto;"></div>
+        <div id="totalSize" style="text-align: center; margin-bottom: 10px;"></div>
+        <button class="upload-btn confirm-btn" type="button" onclick="confirmUpload()">
+          ⬆️ Upload Now (<span id="selectedFileCount">0</span> files)
+        </button>
+      </div>
+    </div>
+    
+    <div class="progress-container" id="progressContainer">
+      <div id="currentFile"></div>
+      <div class="progress-bar">
+        <div class="progress-fill" id="uploadProgress"></div>
+      </div>
+      <div id="eta"></div>
+      <div id="uploadStatus"></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <input type="text" id="searchInput" placeholder="🔍 Search files..." oninput="searchFiles(this.value)">
+    <select onchange="sortFiles(this.value)">
+      <option value="date">Newest First</option>
+      <option value="name">Sort by Name</option>
+      <option value="size">Sort by Size</option>
+    </select>
+  </div>
+
+  <h3 style="margin-bottom: 15px; color: #1f2937; font-size: 18px; font-weight: 600;">Your Files</h3>
+  <div class="files-grid" id="filesContainer">
+    <p style="text-align:center;color:#999;padding:40px;grid-column:1/-1;">No files yet. Upload your first file!</p>
+  </div>
+
+</div>
+
+<script>
+console.log("=== My Cloud File Manager ===");
+console.log("For help:");
+console.log("1. Check connection status above");
+console.log("2. Click 🐛 button for debug info");
+console.log("3. 23KB file should upload in 2-3 seconds");
+console.log("4. If stuck: Check Firebase Console → Database → Rules");
+</script>
+
+</body>
+</html>
