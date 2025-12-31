@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My Cloud ✌️</title>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import { getDatabase, ref, set, onValue, remove, push } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+
+// Your Firebase config
+const firebaseConfig = {
+  apiKey: "AIzaSyBxIu8SsHqrtMU3dWRsysNmNlwjcdFE_xM",
+  authDomain: "file-1bb57.firebaseapp.com",
+  databaseURL: "https://file-1bb57-default-rtdb.firebaseio.com",
+  projectId: "file-1bb57",
+  storageBucket: "file-1bb57.firebasestorage.app",
+  messagingSenderId: "824967426874",
+  appId: "1:824967426874:web:fbf20b808c2624deb0d603",
+  measurementId: "G-0CZH7Z7M7N"
+};
+
+console.log("🚀 Starting My Cloud - No Auth Version");
+
+try {
+  // Initialize Firebase WITHOUT authentication
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+  
+  console.log("✅ Firebase initialized successfully");
+  console.log("🌐 Database URL:", firebaseConfig.databaseURL);
+  
+  // Test connection by reading from database
+  const testRef = ref(db, "connection_test");
+  
+  // Try to write (will fail if rules don't allow)
+  set(testRef, {
+    message: "My Cloud Connection Test",
+    timestamp: Date.now(),
+    project: "file-1bb57"
+  })
+  .then(() => {
+    console.log("✅ Database write: SUCCESS");
+    document.getElementById("status").innerHTML = 
+      '<div style="background: #d1fae5; padding: 15px; border-radius: 10px; border: 2px solid #10b981;">' +
+      '  <h3 style="color: #065f46; margin: 0 0 10px 0;">✅ CONNECTED TO FIREBASE</h3>' +
+      '  <p style="margin: 0; color: #065f46;">Database is ready for uploads!</p>' +
+      '</div>';
+  })
+  .catch(error => {
+    console.error("❌ Database write failed:", error);
+    
+    if (error.code === 'PERMISSION_DENIED') {
+      document.getElementById("status").innerHTML = 
+        `<div style="background: #fee2e2; padding: 20px; border-radius: 10px; border: 2px solid #dc2626; margin-bottom: 20px;">
+          <h3 style="color: #991b1b; margin: 0 0 15px 0;">🔒 DATABASE LOCKED</h3>
+          <p style="margin-bottom: 15px;">Firebase Realtime Database is locked. You need to change security rules.</p>
+          
+          <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+            <p style="margin: 0 0 10px 0; font-weight: bold;">Quick fix:</p>
+            <ol style="margin: 0; padding-left: 20px;">
+              <li>Go to <a href="https://console.firebase.google.com/project/file-1bb57/database" target="_blank" style="color: #2563eb; font-weight: bold;">Firebase Console → Database → Rules</a></li>
+              <li>Replace ALL rules with:</li>
+            </ol>
+            <pre style="background: #1f2937; color: white; padding: 15px; border-radius: 5px; margin: 10px 0; overflow-x: auto;">
+{
+  "rules": {
+    ".read": true,
+    ".write": true
+  }
+}</pre>
+            <li>Click <strong>"Publish"</strong></li>
+            <li>Refresh this page</li>
+          </div>
+          
+          <p style="margin: 15px 0 0 0; font-size: 14px; color: #7f1d1d;">
+            ⚠️ Note: These rules allow anyone to read/write. For production, add proper authentication.
+          </p>
+        </div>`;
+    } else {
+      document.getElementById("status").innerHTML = 
+        `<div style="background: #fef3c7; padding: 15px; border-radius: 10px; border: 2px solid #d97706;">
+          <h3 style="color: #92400e; margin: 0 0 10px 0;">⚠️ Connection Error</h3>
+          <p style="margin: 0; color: #92400e;">${error.message}</p>
+          <p style="margin: 10px 0 0 0; font-size: 14px;">
+            Check if Realtime Database is enabled in Firebase Console.
+          </p>
+        </div>`;
+    }
+  });
+  
+  // Always try to read (to check if database exists)
+  onValue(testRef, (snapshot) => {
+    if (snapshot.exists()) {
+      console.log("✅ Database read: SUCCESS", snapshot.val());
+    }
+  }, { onlyOnce: true });
+  
+  // Store for global access
+  window.db = db;
+  
+  // Initialize file manager
+  initializeFileManager(db);
+  
+} catch (error) {
+  console.error("❌ Firebase initialization failed:", error);
+  document.getElementById("status").innerHTML = 
+    `<div style="background: #fee2e2; padding: 15px; border-radius: 10px; border: 2px solid #dc2626;">
+      <h3 style="color: #991b1b; margin: 0 0 10px 0;">❌ Initialization Failed</h3>
+      <p style="margin: 0; color: #991b1b;">${error.message}</p>
+    </div>`;
+}
+
+function initializeFileManager(db) {
+  console.log("📁 Initializing file manager...");
+  
+  const filesRef = ref(db, "files");
+  let allFiles = [];
+  
+  // Load existing files
+  onValue(filesRef, (snapshot) => {
+    allFiles = [];
+    if (snapshot.exists()) {
+      snapshot.forEach((child) => {
+        allFiles.push({
+          id: child.key,
+          ...child.val()
+        });
+      });
+      console.log(`📥 Loaded ${allFiles.length} files from database`);
+      updateFileCount(allFiles.length);
+    } else {
+      console.log("📭 No files in database yet");
+      updateFileCount(0);
+    }
+    renderFiles(allFiles);
+  });
+  
+  // Upload function
+  window.uploadFiles = async (fileList) => {
+    const files = Array.from(fileList);
+    let uploaded = 0;
+    let failed = 0;
+    
+    document.getElementById("uploadProgress").style.width = "0%";
+    document.getElementById("uploadStatus").innerHTML = 
+      `<span style="color: #3b82f6;">🔄 Starting upload of ${files.length} file(s)...</span>`;
+    document.getElementById("progressContainer").style.display = "block";
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      
+      // Update progress
+      const progress = Math.round((i / files.length) * 100);
+      document.getElementById("uploadProgress").style.width = `${progress}%`;
+      document.getElementById("currentFile").textContent = `Uploading: ${file.name}`;
+      
+      // Check file size
+      if (file.size > 5 * 1024 * 1024) {
+        document.getElementById("uploadStatus").innerHTML += 
+          `<br><span style="color: #f59e0b;">⚠️ ${file.name} is too large (max 5MB)</span>`;
+        failed++;
+        continue;
+      }
+      
+      try {
+        // Convert file to Base64
+        const base64Data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+        
+        // Prepare file data
+        const fileData = {
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          date: Date.now(),
+          data: base64Data
+        };
+        
+        // Upload to Firebase
+        const newFileRef = push(filesRef);
+        await set(newFileRef, fileData);
+        
+        uploaded++;
+        console.log(`✅ Uploaded: ${file.name} (${(file.size/1024).toFixed(1)} KB)`);
+        
+        document.getElementById("uploadStatus").innerHTML = 
+          `<span style="color: #10b981;">✅ Uploaded ${uploaded}/${files.length} files</span>`;
+        
+        // Small delay between files
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+      } catch (error) {
+        console.error(`❌ Failed to upload ${file.name}:`, error);
+        failed++;
+        document.getElementById("uploadStatus").innerHTML += 
+          `<br><span style="color: #ef4444;">❌ Failed: ${file.name} - ${error.message}</span>`;
+      }
+    }
+    
+    // Complete
+    document.getElementById("uploadProgress").style.width = "100%";
+    document.getElementById("currentFile").textContent = "Upload complete!";
+    
+    if (uploaded > 0) {
+      document.getElementById("uploadStatus").innerHTML += 
+        `<br><span style="color: #10b981;">✨ ${uploaded} file(s) uploaded successfully</span>`;
+    }
+    
+    if (failed > 0) {
+      document.getElementById("uploadStatus").innerHTML += 
+        `<br><span style="color: #f59e0b;">⚠️ ${failed} file(s) failed</span>`;
+    }
+    
+    // Reset after 3 seconds
+    setTimeout(() => {
+      document.getElementById("progressContainer").style.display = "none";
+      document.getElementById("uploadProgress").style.width = "0%";
+      document.getElementById("uploadStatus").innerHTML = "";
+      document.getElementById("currentFile").textContent = "";
+      document.getElementById("fileInput").value = "";
+    }, 3000);
+  };
+  
+  window.deleteFile = (id) => {
+    if (confirm("Are you sure you want to delete this file?")) {
+      remove(ref(db, "files/" + id));
+    }
+  };
+  
+  window.downloadFile = (base64Data, fileName) => {
+    try {
+      const link = document.createElement('a');
+      link.href = base64Data;
+      link.download = fileName;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      console.log(`✅ Download started: ${fileName}`);
+    } catch (error) {
+      console.error("Download error:", error);
+      alert("Could not download file. Please try again.");
+    }
+  };
+  
+  function renderFiles(files) {
+    const container = document.getElementById("filesContainer");
+    
+    if (files.length === 0) {
+      container.innerHTML = `
+        <div style="text-align: center; padding: 50px 20px; color: #6b7280;">
+          <div style="font-size: 64px; margin-bottom: 20px; opacity: 0.5;">☁️</div>
+          <h3 style="font-weight: 500; margin-bottom: 10px;">No files yet</h3>
+          <p>Upload your first file using the button above</p>
+        </div>
+      `;
+      return;
+    }
+    
+    // Sort by date (newest first)
+    files.sort((a, b) => b.date - a.date);
+    
+    let html = '';
+    
+    files.forEach(file => {
+      const icon = getFileIcon(file.type);
+      const date = new Date(file.date).toLocaleDateString();
+      const time = new Date(file.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+      const size = (file.size / 1024).toFixed(1);
+      
+      // Escape quotes for JavaScript
+      const safeData = file.data.replace(/'/g, "\\'").replace(/"/g, '\\"');
+      const safeName = file.name.replace(/'/g, "\\'").replace(/"/g, '\\"');
+      
+      html += `
+        <div class="file-card">
+          <div class="file-icon">${icon}</div>
+          <div class="file-info">
+            <div class="file-name" title="${file.name}">${file.name}</div>
+            <div class="file-details">
+              <span>${size} KB</span>
+              <span>•</span>
+              <span>${date} ${time}</span>
+            </div>
+          </div>
+          <div class="file-actions">
+            <button onclick="downloadFile('${safeData}', '${safeName}')" title="Download">
+              ⬇️
+            </button>
+            <button onclick="deleteFile('${file.id}')" class="delete-btn" title="Delete">
+              🗑️
+            </button>
+          </div>
+        </div>
+      `;
+    });
+    
+    container.innerHTML = html;
+  }
+  
+  function getFileIcon(type) {
+    if (type.startsWith('image/')) return '🖼️';
+    if (type.includes('pdf')) return '📄';
+    if (type.includes('video')) return '🎥';
+    if (type.includes('audio')) return '🎵';
+    if (type.includes('text') || type.includes('html')) return '📝';
+    if (type.includes('zip') || type.includes('rar') || type.includes('tar')) return '🗜️';
+    return '📁';
+  }
+  
+  function updateFileCount(count) {
+    document.getElementById("fileCount").textContent = `${count} Files`;
+  }
+  
+  // Setup file input
+  document.getElementById('fileInput').addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+      uploadFiles(e.target.files);
+    }
+  });
+  
+  // Setup drag and drop
+  const dropZone = document.getElementById('dropZone');
+  
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.style.borderColor = '#8b5cf6';
+    dropZone.style.background = '#f5f3ff';
+  });
+  
+  dropZone.addEventListener('dragleave', () => {
+    dropZone.style.borderColor = '#e5e7eb';
+    dropZone.style.background = 'white';
+  });
+  
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.style.borderColor = '#e5e7eb';
+    dropZone.style.background = 'white';
+    
+    if (e.dataTransfer.files.length > 0) {
+      uploadFiles(e.dataTransfer.files);
+    }
+  });
+  
+  console.log("✅ File manager initialized");
+}
+</script>
+
+<style>
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e4e9f2 100%);
+  min-height: 100vh;
+  padding: 20px;
+  color: #1f2937;
+}
+
+.container {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 30px;
+  padding: 30px;
+}
+
+.header h1 {
+  font-size: 2.5rem;
+  font-weight: 700;
+  margin-bottom: 10px;
+  background: linear-gradient(135deg, #8b5cf6 0%, #3b82f6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.header p {
+  color: #6b7280;
+  font-size: 1.1rem;
+}
+
+.status-box {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 30px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+  border: 2px solid #e5e7eb;
+}
+
+.upload-section {
+  background: white;
+  border-radius: 12px;
+  padding: 30px;
+  margin-bottom: 30px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+}
+
+.drop-zone {
+  border: 2px dashed #e5e7eb;
+  border-radius: 10px;
+  padding: 40px;
+  text-align: center;
+  background: white;
+  transition: all 0.3s;
+  cursor: pointer;
+}
+
+.drop-zone:hover {
+  border-color: #8b5cf6;
+  background: #f5f3ff;
+}
+
+.drop-zone h3 {
+  margin-bottom: 10px;
+  color: #4b5563;
+}
+
+.drop-zone p {
+  color: #9ca3af;
+  margin-bottom: 20px;
+}
+
+.upload-btn {
+  background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+  color: white;
+  border: none;
+  padding: 12px 30px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.upload-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(139, 92, 246, 0.3);
+}
+
+.upload-btn:active {
+  transform: translateY(0);
+}
+
+.progress-container {
+  margin-top: 20px;
+  display: none;
+}
+
+.progress-bar {
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #8b5cf6, #6366f1);
+  width: 0%;
+  transition: width 0.3s ease;
+}
+
+#currentFile, #uploadStatus {
+  font-size: 14px;
+  color: #6b7280;
+  margin-top: 5px;
+}
+
+#uploadStatus {
+  min-height: 20px;
+}
+
+.files-section {
+  background: white;
+  border-radius: 12px;
+  padding: 30px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.section-header h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+#fileCount {
+  background: #f3f4f6;
+  padding: 5px 15px;
+  border-radius: 20px;
+  font-size: 14px;
+  color: #6b7280;
+}
+
+#filesContainer {
+  display: grid;
+  gap: 15px;
+}
+
+.file-card {
+  display: flex;
+  align-items: center;
+  padding: 15px;
+  background: #f9fafb;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  transition: all 0.2s;
+}
+
+.file-card:hover {
+  background: white;
+  border-color: #d1d5db;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+  transform: translateY(-2px);
+}
+
+.file-icon {
+  font-size: 32px;
+  margin-right: 15px;
+  flex-shrink: 0;
+  width: 40px;
+  text-align: center;
+}
+
+.file-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-name {
+  font-weight: 500;
+  margin-bottom: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-details {
+  font-size: 13px;
+  color: #6b7280;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.file-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.file-actions button {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 8px;
+  background: #f3f4f6;
+  color: #4b5563;
+  font-size: 18px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.file-actions button:hover {
+  background: #e5e7eb;
+  color: #1f2937;
+}
+
+.file-actions button.delete-btn:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+input[type="file"] {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  body {
+    padding: 15px;
+  }
+  
+  .header {
+    padding: 20px 15px;
+  }
+  
+  .header h1 {
+    font-size: 2rem;
+  }
+  
+  .upload-section, .files-section {
+    padding: 20px;
+  }
+  
+  .drop-zone {
+    padding: 30px 20px;
+  }
+  
+  .file-card {
+    flex-wrap: wrap;
+  }
+  
+  .file-actions {
+    margin-top: 10px;
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+  <div class="header">
+    <h1>My Cloud ✌️</h1>
+    <p>Simple file storage with Firebase Realtime Database</p>
+  </div>
+  
+  <div id="status" class="status-box">
+    🔄 Testing Firebase connection...
+  </div>
+  
+  <div class="upload-section">
+    <div class="drop-zone" id="dropZone">
+      <h3>📤 Upload Files</h3>
+      <p>Drag & drop files here or click to select</p>
+      <p style="font-size: 14px; color: #9ca3af; margin-top: 10px;">Max file size: 5MB per file</p>
+      <button class="upload-btn" onclick="document.getElementById('fileInput').click()" style="margin-top: 20px;">
+        Choose Files
+      </button>
+      <input type="file" id="fileInput" multiple>
+    </div>
+    
+    <div class="progress-container" id="progressContainer">
+      <div class="progress-bar">
+        <div class="progress-fill" id="uploadProgress"></div>
+      </div>
+      <div id="currentFile"></div>
+      <div id="uploadStatus"></div>
+    </div>
+  </div>
+  
+  <div class="files-section">
+    <div class="section-header">
+      <h2>Your Files</h2>
+      <div id="fileCount">0 Files</div>
+    </div>
+    <div id="filesContainer">
+      <!-- Files will appear here -->
+    </div>
+  </div>
+</div>
+
+<script>
+console.log("=== My Cloud Debug Info ===");
+console.log("If files don't appear after upload:");
+console.log("1. Check Firebase Console → Database → Rules");
+console.log("2. Set rules to: .read: true, .write: true");
+console.log("3. Click 'Publish'");
+console.log("4. Refresh this page");
+</script>
+</body>
+</html>
